@@ -14065,6 +14065,7 @@ async function returnWriteFile(fileName, bookMetadata) {
 }
 
 ;// CONCATENATED MODULE: ./src/utils.ts
+
 /** make sure date is in YYYY-MM-DD format */
 function dateFormat(date) {
     return date.match(/^\d{4}-\d{2}-\d{2}$/) != null;
@@ -14097,6 +14098,32 @@ function removeWrappedQuotes(str) {
     }
     else
         return str;
+}
+function localDate() {
+    // "fr-ca" will result YYYY-MM-DD formatting
+    const dateFormat = new Intl.DateTimeFormat("fr-ca", {
+        dateStyle: "short",
+        timeZone: (0,core.getInput)("timeZone"),
+    });
+    return dateFormat.format(new Date());
+}
+function getBookStatus(dateStarted, dateFinished) {
+    // Set book status
+    if (dateStarted && !dateFinished)
+        return "started";
+    if (dateFinished)
+        return "finished";
+    return "want to read";
+}
+function getDates(bookStatus, dateStarted, dateFinished) {
+    return {
+        dateAdded: bookStatus === "want to read" ? localDate() : undefined,
+        dateStarted: dateStarted || undefined,
+        dateFinished: dateFinished || undefined,
+    };
+}
+function toArray(tags) {
+    return tags.split(",").map((f) => f.trim());
 }
 
 ;// CONCATENATED MODULE: ./src/clean-book.ts
@@ -14132,50 +14159,15 @@ function cleanBook(options, book) {
     };
 }
 
-;// CONCATENATED MODULE: ./src/read-file.ts
-
-async function returnReadFile(fileName) {
-    try {
-        const contents = await (0,promises_namespaceObject.readFile)(fileName, "utf-8");
-        if (contents === "" || !contents)
-            return [];
-        return JSON.parse(contents);
-    }
-    catch (error) {
-        throw new Error(error);
-    }
-}
-
-;// CONCATENATED MODULE: ./src/add-book.ts
-
-
-
-
-async function addBook(options, book, fileName) {
-    const readListJson = (await returnReadFile(fileName));
-    // clean up book data
-    const newBook = cleanBook(options, book);
-    // export book thumbnail to download later
-    if (newBook.thumbnail) {
-        (0,core.exportVariable)("BookThumbOutput", `book-${newBook.isbn}.png`);
-        (0,core.exportVariable)("BookThumb", newBook.thumbnail);
-    }
-    // append new book
-    readListJson.push(newBook);
-    return sortByDate(readListJson);
-}
-
 ;// CONCATENATED MODULE: ./src/get-book.ts
 
 
-
 async function getBook(options) {
-    const { bookIsbn, providers, fileName } = options;
+    const { bookIsbn, providers } = options;
     try {
         const book = (await node_isbn_default().provider(providers).resolve(bookIsbn));
-        (0,core.exportVariable)("BookTitle", book.title);
-        const books = (await addBook(options, book, fileName));
-        return books;
+        const newBook = cleanBook(options, book);
+        return newBook;
     }
     catch (error) {
         throw new Error(error.message);
@@ -14183,18 +14175,19 @@ async function getBook(options) {
 }
 
 ;// CONCATENATED MODULE: ./src/checkout-book.ts
-
-
-async function checkOutBook(bookParams) {
-    const { fileName, bookIsbn } = bookParams;
-    const currentBooks = await returnReadFile(fileName);
-    if (currentBooks === undefined || currentBooks.length === 0)
+function checkOutBook(bookParams, library) {
+    const { bookIsbn } = bookParams;
+    if (library === undefined || library.length === 0)
         return false;
-    if (currentBooks.filter((f) => f.isbn === bookIsbn).length === 0)
+    if (library.filter((f) => f.isbn === bookIsbn).length === 0)
         return false;
-    return updateBook(currentBooks, bookParams);
+    else
+        return true;
 }
-async function updateBook(currentBooks, bookParams) {
+
+;// CONCATENATED MODULE: ./src/update-book.ts
+
+async function updateBook(bookParams, currentBooks) {
     const { bookIsbn, dates, bookStatus, notes, rating, tags } = bookParams;
     return currentBooks.reduce((arr, book) => {
         if (book.isbn === bookIsbn) {
@@ -14218,7 +14211,38 @@ function addNotes(notes, bookNotes) {
     return `${bookNotes ? `${bookNotes}\n\n` : ""}${notes}`;
 }
 
+;// CONCATENATED MODULE: ./src/read-file.ts
+
+async function returnReadFile(fileName) {
+    try {
+        const contents = await (0,promises_namespaceObject.readFile)(fileName, "utf-8");
+        if (contents === "" || !contents)
+            return [];
+        return JSON.parse(contents);
+    }
+    catch (error) {
+        throw new Error(error);
+    }
+}
+
+;// CONCATENATED MODULE: ./src/validate-payload.ts
+
+
+function validatePayload(payload) {
+    if (!payload)
+        return (0,core.setFailed)("Missing `inputs`");
+    if (!payload.bookIsbn)
+        return (0,core.setFailed)("Missing `bookIsbn` in payload");
+    if (payload.dateFinished && !isDate(payload.dateFinished))
+        return (0,core.setFailed)(`Invalid \`dateFinished\` in payload: ${payload.dateFinished}`);
+    if (payload.dateStarted && !isDate(payload.dateStarted))
+        return (0,core.setFailed)(`Invalid \`dateStarted\` in payload: ${payload.dateStarted}`);
+}
+
 ;// CONCATENATED MODULE: ./src/index.ts
+
+
+
 
 
 
@@ -14241,62 +14265,37 @@ async function read() {
         const bookStatus = getBookStatus(dateStarted, dateFinished);
         (0,core.exportVariable)("BookStatus", bookStatus);
         const dates = getDates(bookStatus, dateStarted, dateFinished);
-        const bookParams = {
-            fileName,
-            bookIsbn,
-            dates,
-            notes,
-            bookStatus,
-            rating,
-            providers,
-            ...(tags && { tags: toArray(tags) }),
-        };
-        // Check if book already exists in library
-        const bookExists = await checkOutBook(bookParams);
-        const library = bookExists == false ? await getBook(bookParams) : bookExists;
-        await returnWriteFile(fileName, library);
+        let library = await returnReadFile(fileName);
+        for (const isbn of bookIsbn.split(",")) {
+            const bookParams = {
+                fileName,
+                dates,
+                notes,
+                bookIsbn: isbn,
+                bookStatus,
+                rating,
+                providers,
+                ...(tags && { tags: toArray(tags) }),
+            };
+            const bookExists = checkOutBook(bookParams, library);
+            if (bookExists) {
+                library = await updateBook(bookParams, library);
+            }
+            else {
+                const newBook = await getBook(bookParams);
+                library.push(newBook);
+                (0,core.exportVariable)("BookTitle", newBook.title);
+                (0,core.exportVariable)("BookThumbOutput", `book-${newBook.isbn}.png`);
+                (0,core.exportVariable)("BookThumb", newBook.thumbnail);
+            }
+        }
+        await returnWriteFile(fileName, sortByDate(library));
     }
     catch (error) {
         (0,core.setFailed)(error.message);
     }
 }
 /* harmony default export */ const src = (read());
-function localDate() {
-    // "fr-ca" will result YYYY-MM-DD formatting
-    const dateFormat = new Intl.DateTimeFormat("fr-ca", {
-        dateStyle: "short",
-        timeZone: (0,core.getInput)("timeZone"),
-    });
-    return dateFormat.format(new Date());
-}
-function getBookStatus(dateStarted, dateFinished) {
-    // Set book status
-    if (dateStarted && !dateFinished)
-        return "started";
-    if (dateFinished)
-        return "finished";
-    return "want to read";
-}
-function getDates(bookStatus, dateStarted, dateFinished) {
-    return {
-        dateAdded: bookStatus === "want to read" ? localDate() : undefined,
-        dateStarted: dateStarted || undefined,
-        dateFinished: dateFinished || undefined,
-    };
-}
-function validatePayload(payload) {
-    if (!payload)
-        return (0,core.setFailed)("Missing `inputs`");
-    if (!payload.bookIsbn)
-        return (0,core.setFailed)("Missing `bookIsbn` in payload");
-    if (payload.dateFinished && !isDate(payload.dateFinished))
-        return (0,core.setFailed)(`Invalid \`dateFinished\` in payload: ${payload.dateFinished}`);
-    if (payload.dateStarted && !isDate(payload.dateStarted))
-        return (0,core.setFailed)(`Invalid \`dateStarted\` in payload: ${payload.dateStarted}`);
-}
-function toArray(tags) {
-    return tags.split(",").map((f) => f.trim());
-}
 
 })();
 
