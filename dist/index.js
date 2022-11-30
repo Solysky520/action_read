@@ -14266,7 +14266,9 @@ async function read() {
         (0,core.exportVariable)("BookStatus", bookStatus);
         const dates = getDates(bookStatus, dateStarted, dateFinished);
         let library = await returnReadFile(fileName);
-        for (const isbn of bookIsbn.split(",")) {
+        const books = bookIsbn.split(",");
+        (0,core.exportVariable)(`NumberOfBooks`, books.length);
+        for (const [index, isbn] of books.entries()) {
             const bookParams = {
                 fileName,
                 dates,
@@ -14284,9 +14286,10 @@ async function read() {
             else {
                 const newBook = await getBook(bookParams);
                 library.push(newBook);
-                (0,core.exportVariable)("BookTitle", newBook.title);
-                (0,core.exportVariable)("BookThumbOutput", `book-${newBook.isbn}.png`);
-                (0,core.exportVariable)("BookThumb", newBook.thumbnail);
+                // How to make this work for multiple books without overriding
+                (0,core.exportVariable)(`BookTitle-${index}`, newBook.title);
+                (0,core.exportVariable)(`BookThumbOutput-${index}`, `book-${newBook.isbn}.png`);
+                (0,core.exportVariable)(`BookThumb-${index}`, newBook.thumbnail);
             }
         }
         await returnWriteFile(fileName, sortByDate(library));
