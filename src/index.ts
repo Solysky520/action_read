@@ -3,9 +3,12 @@ import * as github from "@actions/github";
 import isbn from "node-isbn";
 import returnWriteFile from "./write-file";
 import getBook from "./get-book";
-import { isDate } from "./utils";
+import { getBookStatus, getDates, sortByDate, toArray } from "./utils";
 import { checkOutBook } from "./checkout-book";
+import { updateBook } from "./update-book";
 import { BookStatus } from "./clean-book";
+import returnReadFile from "./read-file";
+import { validatePayload } from "./validate-payload";
 
 export type Dates = {
   dateAdded: string | undefined;
@@ -57,78 +60,38 @@ export async function read() {
     const bookStatus = getBookStatus(dateStarted, dateFinished);
     exportVariable("BookStatus", bookStatus);
     const dates = getDates(bookStatus, dateStarted, dateFinished);
-    const bookParams: BookParams = {
-      fileName,
-      bookIsbn,
-      dates,
-      notes,
-      bookStatus,
-      rating,
-      providers,
-      ...(tags && { tags: toArray(tags) }),
-    };
 
-    // Check if book already exists in library
-    const bookExists = await checkOutBook(bookParams);
-    const library =
-      bookExists == false ? await getBook(bookParams) : bookExists;
+    let library = await returnReadFile(fileName);
 
-    await returnWriteFile(fileName, library);
+    for (const isbn of bookIsbn.split(",")) {
+      const bookParams: BookParams = {
+        fileName,
+        dates,
+        notes,
+        bookIsbn: isbn,
+        bookStatus,
+        rating,
+        providers,
+        ...(tags && { tags: toArray(tags) }),
+      };
+
+      const bookExists = checkOutBook(bookParams, library);
+
+      if (bookExists) {
+        library = await updateBook(bookParams, library);
+      } else {
+        const newBook = await getBook(bookParams);
+        library.push(newBook);
+        exportVariable("BookTitle", newBook.title);
+        exportVariable("BookThumbOutput", `book-${newBook.isbn}.png`);
+        exportVariable("BookThumb", newBook.thumbnail);
+      }
+    }
+
+    await returnWriteFile(fileName, sortByDate(library));
   } catch (error) {
     setFailed(error.message);
   }
 }
 
 export default read();
-
-function localDate() {
-  // "fr-ca" will result YYYY-MM-DD formatting
-  const dateFormat = new Intl.DateTimeFormat("fr-ca", {
-    dateStyle: "short",
-    timeZone: getInput("timeZone"),
-  });
-  return dateFormat.format(new Date());
-}
-
-function getBookStatus(
-  dateStarted: Dates["dateStarted"],
-  dateFinished: Dates["dateFinished"]
-): BookStatus {
-  // Set book status
-  if (dateStarted && !dateFinished) return "started";
-  if (dateFinished) return "finished";
-  return "want to read";
-}
-
-function getDates(
-  bookStatus: BookStatus,
-  dateStarted: Dates["dateStarted"],
-  dateFinished: Dates["dateFinished"]
-): {
-  dateAdded: string | undefined;
-  dateStarted: string | undefined;
-  dateFinished: string | undefined;
-} {
-  return {
-    dateAdded: bookStatus === "want to read" ? localDate() : undefined,
-    dateStarted: dateStarted || undefined,
-    dateFinished: dateFinished || undefined,
-  };
-}
-
-function validatePayload(payload: BookPayload): void {
-  if (!payload) return setFailed("Missing `inputs`");
-  if (!payload.bookIsbn) return setFailed("Missing `bookIsbn` in payload");
-  if (payload.dateFinished && !isDate(payload.dateFinished))
-    return setFailed(
-      `Invalid \`dateFinished\` in payload: ${payload.dateFinished}`
-    );
-  if (payload.dateStarted && !isDate(payload.dateStarted))
-    return setFailed(
-      `Invalid \`dateStarted\` in payload: ${payload.dateStarted}`
-    );
-}
-
-function toArray(tags: string): BookParams["tags"] {
-  return tags.split(",").map((f) => f.trim());
-}
