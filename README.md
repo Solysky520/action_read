@@ -72,12 +72,8 @@ jobs:
       - name: Read
         uses: katydecorah/read-action@v6.3.0
       - name: Download the book thumbnail
-        if: env.BookThumbOutput != ''
-        run: |
-          set -B
-          for i in {0..${{ env.NumberOfBooks }}}; do
-            curl "${{ env.BookThumb-$i }}" -o "img/${{ env.BookThumbOutput-${i} }}"
-          done
+        if: env.BookThumbOutput-0 != ''
+        run: curl "${{ env.BookThumb-[0-2] }}" -o "img/${{ env.BookThumbOutput-[0-2] }}"
       - name: Commit files
         run: |
           git pull
